@@ -1,0 +1,27 @@
+{
+  "name": "diep2-chat",
+  "version": "1.0.0",
+  "description": "A chat system for diep2.io.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node ./index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Mega-Mewthree/Diep2-Chat"
+  },
+  "author": "Nebula",
+  "license": "UNLICENSED",
+  "bugs": {
+    "url": "https://github.com/Mega-Mewthree/Diep2-Chat/issues"
+  },
+  "homepage": "https://github.com/Mega-Mewthree/Diep2-Chat#README",
+  "dependencies": {
+    "express": "^4.15.4",
+    "socket.io": "^2.0.0"
+  },
+  "engines": {
+    "node": "7.6.0"
+  }
+}
