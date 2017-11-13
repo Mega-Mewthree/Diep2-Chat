@@ -12,7 +12,9 @@ app.use((err, request, response, next) => {
   response.status(500).send('Something broke!');
 });
 
-app.use(express.static('public'));
+app.get('/', function(req, res) {
+  res.sendFile(__dirname + '/index.html');
+});
 
 io.on("connection", (socket) => {
   console.log("A client connected!")
