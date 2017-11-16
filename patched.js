@@ -80,7 +80,7 @@ var app =
 		global.mobile = true;
 	}
 
-	function startGame(type) {
+	window.startGame = function (type) {
 		global.playerName = playerNameInput.value.replace(/(<([^>]+)>)/ig, '').substring(0, 25);
 		global.playerKey = playerKeyInput.value.replace(/(<([^>]+)>)/ig, '').substring(0, 64);
 		global.playerType = type;
@@ -1148,20 +1148,7 @@ var app =
 		drawText('lol you died', global.screenWidth / 2, global.screenHeight / 2 - 40, 16, color.guiwhite);
 		drawText('Final score: ' + gui.score, global.screenWidth / 2, global.screenHeight / 2, 48, color.guiwhite);
 		drawText('Press Enter to play again.', global.screenWidth / 2, global.screenHeight / 2 + 40, 16, color.guiwhite);
-		var alreadyRestarted = false;
-		window.restartOnEnter = function (e){
-			if (!alreadyRestarted && e.keyCode === global.KEY_ENTER){
-				alreadyRestarted = true;
-				e.preventDefault();
-				e.stopPropagation();
-				window.removeEventListener("keypress", window.restartOnEnter);
-				window.restartOnEnter = null;
-				global.died = false;
-				startGame("player");
-				setTimeout(() => {alreadyRestarted = false;}, 2500);
-			}
-		}
-		window.addEventListener("keypress", window.restartOnEnter);
+		//startGame("player");
 	}
 
 	function gameDrawBeforeStart() {
