@@ -81,6 +81,10 @@ var app =
 	}
 
 	window.startGame = function (type) {
+		socket && socket.close && socket.close();
+		socket = null;
+		global.disconnected = false;
+		global.died = false;
 		global.playerName = playerNameInput.value.replace(/(<([^>]+)>)/ig, '').substring(0, 25);
 		global.playerKey = playerKeyInput.value.replace(/(<([^>]+)>)/ig, '').substring(0, 64);
 		global.playerType = type;
