@@ -80,11 +80,7 @@ var app =
 		global.mobile = true;
 	}
 
-	window.startGame = function (type) {
-		socket && socket.close && socket.close();
-		socket = null;
-		global.disconnected = false;
-		global.died = false;
+	function startGame(type) {
 		global.playerName = playerNameInput.value.replace(/(<([^>]+)>)/ig, '').substring(0, 25);
 		global.playerKey = playerKeyInput.value.replace(/(<([^>]+)>)/ig, '').substring(0, 64);
 		global.playerType = type;
@@ -104,6 +100,14 @@ var app =
 		socket.emit('spawn', global.playerKey);
 		window.canvas.socket = socket;
 		global.socket = socket;
+	}
+
+	function restartGame(){
+		socket && socket.close && socket.close();
+		socket = null;
+		global.died = false;
+		global.disconnected = false;
+		startGame("player");
 	}
 
 	// Checks if the nick chosen contains valid alphanumeric characters (and underscores).
@@ -403,6 +407,13 @@ var app =
 			/*if (global.animLoopHandle) {
        window.cancelAnimationFrame(global.animLoopHandle);
    }*/
+	 		function checkRestart(e){
+				if ((e.which || e.keyCode) === global.KEY_ENTER){
+					window.removeEventListener("keydown", checkRestart);
+					restartGame();
+				}
+			}
+	 		window.addEventListener("keydown", checkRestart);
 		});
 		socket.on('message', function (message) {
 			// Death
@@ -1152,7 +1163,6 @@ var app =
 		drawText('lol you died', global.screenWidth / 2, global.screenHeight / 2 - 40, 16, color.guiwhite);
 		drawText('Final score: ' + gui.score, global.screenWidth / 2, global.screenHeight / 2, 48, color.guiwhite);
 		drawText('Press Enter to play again.', global.screenWidth / 2, global.screenHeight / 2 + 40, 16, color.guiwhite);
-		//startGame("player");
 	}
 
 	function gameDrawBeforeStart() {
