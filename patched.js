@@ -1149,7 +1149,7 @@ var app =
 		drawText('Final score: ' + gui.score, global.screenWidth / 2, global.screenHeight / 2, 48, color.guiwhite);
 		drawText('Press Enter to play again.', global.screenWidth / 2, global.screenHeight / 2 + 40, 16, color.guiwhite);
 		window.restartOnEnter = function (e){
-			if (e.keyCode === global.ENTER_KEY){
+			if (e.keyCode === global.KEY_ENTER){
 				e.preventDefault();
 				e.stopPropagation();
 				window.removeEventListener("keypress", window.restartOnEnter);
