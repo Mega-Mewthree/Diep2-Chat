@@ -1148,14 +1148,17 @@ var app =
 		drawText('lol you died', global.screenWidth / 2, global.screenHeight / 2 - 40, 16, color.guiwhite);
 		drawText('Final score: ' + gui.score, global.screenWidth / 2, global.screenHeight / 2, 48, color.guiwhite);
 		drawText('Press Enter to play again.', global.screenWidth / 2, global.screenHeight / 2 + 40, 16, color.guiwhite);
+		var alreadyRestarted = false;
 		window.restartOnEnter = function (e){
-			if (e.keyCode === global.KEY_ENTER){
+			if (!alreadyRestarted && e.keyCode === global.KEY_ENTER){
+				alreadyRestarted = true;
 				e.preventDefault();
 				e.stopPropagation();
 				window.removeEventListener("keypress", window.restartOnEnter);
 				window.restartOnEnter = null;
 				global.died = false;
 				startGame("player");
+				setTimeout(() => {alreadyRestarted = false;}, 2500);
 			}
 		}
 		window.addEventListener("keypress", window.restartOnEnter);
