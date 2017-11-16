@@ -1148,12 +1148,13 @@ var app =
 		drawText('lol you died', global.screenWidth / 2, global.screenHeight / 2 - 40, 16, color.guiwhite);
 		drawText('Final score: ' + gui.score, global.screenWidth / 2, global.screenHeight / 2, 48, color.guiwhite);
 		drawText('Press Enter to play again.', global.screenWidth / 2, global.screenHeight / 2 + 40, 16, color.guiwhite);
-		function restartOnEnter(){
-			window.removeEventListener("keydown", restartOnEnter);
+		window.restartOnEnter = function (){
+			window.removeEventListener("keydown", window.restartOnEnter);
+			window.restartOnEnter = null;
 			global.died = false;
 			startGame("player");
 		}
-		window.addEventListener("keydown", restartOnEnter);
+		window.addEventListener("keydown", window.restartOnEnter);
 	}
 
 	function gameDrawBeforeStart() {
