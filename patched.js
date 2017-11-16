@@ -68,6 +68,13 @@ var app =
 			console.log(args);
 		}
 	};
+	var angleDifference = function angleDifference(sourceA, targetA) {
+		var mod = function mod(a, n) {
+			return (a % n + n) % n;
+		};
+		var a = targetA - sourceA;
+		return mod(a + Math.PI, 2 * Math.PI) - Math.PI;
+	};
 
 	if (/Android|webOS|iPhone|iPad|iPod|BlackBerry/i.test(navigator.userAgent)) {
 		global.mobile = true;
@@ -138,8 +145,12 @@ var app =
 		y: global.screenHeight / 2,
 		vx: 0,
 		vy: 0,
-		time: 0,
+		renderx: global.screenWidth / 2,
+		rendery: global.screenHeight / 2,
+		renderv: 1,
+		slip: 0,
 		view: 1,
+		time: 0,
 		screenWidth: global.screenWidth,
 		screenHeight: global.screenHeight,
 		target: { x: global.screenWidth / 2, y: global.screenHeight / 2 }
@@ -169,14 +180,22 @@ var app =
 	var upgradeSpin = 0;
 
 	var messages = [];
+	var mockups = [];
 	var messageFade = 0;
 	var newMessage = 0;
 
-	var latency = 0;
-	var lag = 0;
+	var metrics = {
+		latency: 0,
+		lag: 0,
+		rendertime: 0,
+		updatetime: 0,
+		lastlag: 0,
+		lastrender: 0,
+		rendergap: 0
+	};
 	var lastPing = 0;
-	var rendertime = 0;
 	var renderTimes = 0;
+	var updateTimes = 0;
 
 	global.canUpgrade = false;
 	global.canSkill = false;
@@ -191,8 +210,116 @@ var app =
 	var ctx2 = c2.getContext('2d');
 	ctx2.imageSmoothingEnabled = false;
 
+	function convertRawData(data) {
+		function process(i) {
+			return {
+				id: i[0][0],
+				index: i[0][1],
+				x: i[0][2],
+				y: i[0][3],
+				vx: i[0][4],
+				vy: i[0][5],
+				size: i[0][6],
+				realSize: i[0][7],
+				fade: i[0][8],
+				color: i[0][9],
+				blend: {
+					color: i[0][10],
+					amount: i[0][11]
+				},
+				health: i[0][12],
+				shield: i[0][13],
+				coherence: i[0][14],
+				facing: i[0][15],
+				shape: i[0][16],
+				name: i[0][17],
+				score: i[0][18],
+				twiggle: i[0][19],
+				layer: i[0][20],
+				vfacing: i[0][21],
+				nameplate: i[0][22],
+				guns: i[1],
+				turrets: i[2].map(function (t) {
+					return process(t);
+				})
+			};
+		}
+		return data.map(function (datum) {
+			datum = process(datum);
+			var e = entities['' + datum.id];
+			if (e != null) {
+				e.render.lastvx = e.vx;
+				e.render.lastvy = e.vy;
+				e.render.lastx = e.x;
+				e.render.lasty = e.y;
+				var save = e.render;
+				e = datum;
+				e.render = save;
+			} else {
+				e = datum;
+				e.render = {
+					x: datum.x,
+					y: datum.y,
+					lastx: datum.x,
+					lasty: datum.y,
+					lastvx: datum.vx,
+					lastvy: datum.vy,
+					f: datum.facing,
+					h: datum.health,
+					s: datum.shield,
+					slip: 0
+				};
+			}
+			return e;
+		});
+	}
+
+	function getEntityImageFromMockup(index) {
+		var color = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : mockups[index].color;
+
+		var mockup = mockups[index];
+		return {
+			time: 0,
+			index: index,
+			x: mockup.x,
+			y: mockup.y,
+			vx: 0,
+			vy: 0,
+			size: mockup.size,
+			realSize: mockup.realSize,
+			fade: 1,
+			color: color,
+			blend: {
+				color: '#FFFFFF',
+				amount: 0
+			},
+			health: 1,
+			shield: 0,
+			coherence: 1,
+			facing: mockup.facing,
+			shape: mockup.shape,
+			name: mockup.name,
+			score: 0,
+			tiggle: 0,
+			layer: mockup.layer,
+			guns: mockup.guns.map(function () {
+				return 0;
+			}),
+			turrets: mockup.turrets.map(function (t) {
+				var o = getEntityImageFromMockup(t.type);
+				o.realSize = o.realSize / o.size * mockup.size * t.sizeFactor;
+				o.size = mockup.size * t.sizeFactor;
+				o.x += mockup.x + mockup.size * t.offset * Math.cos(t.direction + t.angle);
+				o.y += mockup.y + mockup.size * t.offset * Math.sin(t.direction + t.angle);
+				o.facing = t.direction + t.angle;
+				o.layer = t.layerOverride;
+				return o;
+			})
+		};
+	}
+
 	function setupSocket(socket) {
-		// Socket stuff.
+		// Socket stuff.x`
 		socket.on('disconnect', function (m) {
 			// System disconnection
 			global.disconnected = true;
@@ -217,28 +344,49 @@ var app =
 			debug('Game started: ' + global.gameStart);
 			c.focus();
 		});
-		socket.on('gameSetup', function (data) {
+		socket.on('gameSetup', function (data, mockupData) {
 			// Initalization call
 			global.gameWidth = data.gameWidth;
 			global.gameHeight = data.gameHeight;
 			resize();
+			mockups = mockupData;
 		});
 		socket.on('uplink', function (camera, entityList, newGui) {
 			// Handle updates.
-			var ratio = Math.max(global.screenWidth / player.view, global.screenHeight / player.view / 9 * 16);
+			var ratio = Math.max(global.screenWidth / player.renderv, global.screenHeight / player.renderv / 9 * 16);
 			socket.emit('downlink', { // Send a heartbeat back to the server
 				x: window.canvas.target.x / ratio,
 				y: window.canvas.target.y / ratio
-			});
-			player.x = camera.x;
-			player.y = camera.y;
-			player.vx = camera.vx;
-			player.vy = camera.vy;
-			player.time = camera.time;
-			player.view = camera.view;
-			entities = entityList;
-			gui = newGui;
-			lag = Date.now() - camera.time;
+			}, Math.max(player.time, camera.time));
+			if (camera.time > player.time || player.time == null) {
+				// Don't accept out-of-date information.
+				metrics.rendergap = Date.now() - player.time;
+				player.lastx = player.x;
+				player.lasty = player.y;
+				player.x = camera.x;
+				player.y = camera.y;
+				player.lastvx = player.vx;
+				player.lastvy = player.vy;
+				player.vx = camera.vx;
+				player.vy = camera.vy;
+				if (isNaN(player.renderx)) {
+					player.renderx = player.x;
+				}
+				if (isNaN(player.rendery)) {
+					player.rendery = player.y;
+				}
+				player.view = camera.view;
+				if (isNaN(player.renderv) || player.renderv === 0) {
+					player.renderv = 2000;
+				}
+				player.time = camera.time;
+				entities = convertRawData(entityList);
+				gui = newGui;
+				metrics.lastlag = metrics.lag;
+			} else {
+				console.log("Old data!");
+			}
+			updateTimes++; // metrics
 		});
 		socket.on('minimapUpdate', function (newMap, newLeaderboard) {
 			// Update the minimap
@@ -263,7 +411,7 @@ var app =
 		});
 		socket.on('pongcheck', function (t) {
 			console.log('!Pong!');
-			latency = global.time - t;
+			metrics.latency = global.time - t;
 		});
 	}
 
@@ -471,63 +619,63 @@ var app =
 	function drawEntity(x, y, instance, ratio) {
 		var scale = arguments.length > 4 && arguments[4] !== undefined ? arguments[4] : 1;
 		var rot = arguments.length > 5 && arguments[5] !== undefined ? arguments[5] : 0;
-		var assignedContext = arguments.length > 6 && arguments[6] !== undefined ? arguments[6] : false;
+		var turretsObeyRot = arguments.length > 6 && arguments[6] !== undefined ? arguments[6] : 1;
+		var assignedContext = arguments.length > 7 && arguments[7] !== undefined ? arguments[7] : false;
 
 		var drawSize = scale * ratio * instance.size * (1 + 0.5 * (1 - instance.fade));
+		var m = mockups[instance.index];
 
 		context = assignedContext ? assignedContext : ctx;
 		var xx = x,
 		    yy = y;
 		if (assignedContext != ctx2 && instance.fade !== 1) {
 			context = ctx2;
-			context.canvas.width = drawSize * instance.position.axis + ratio * 10;
-			context.canvas.height = drawSize * instance.position.axis + ratio * 10;
-			xx = context.canvas.width / 2 - drawSize * instance.position.axis * instance.position.middle.x * Math.cos(instance.facing + rot) / 4;
-			yy = context.canvas.height / 2 - drawSize * instance.position.axis * instance.position.middle.x * Math.sin(instance.facing + rot) / 4;
+			context.canvas.width = drawSize * m.position.axis + ratio * 10;
+			context.canvas.height = drawSize * m.position.axis + ratio * 10;
+			xx = context.canvas.width / 2 - drawSize * m.position.axis * m.position.middle.x * Math.cos(rot) / 4;
+			yy = context.canvas.height / 2 - drawSize * m.position.axis * m.position.middle.x * Math.sin(rot) / 4;
 		}
-
-		if (instance.extra.tiggle) {
-			instance.facing = Math.atan2(target.y, target.x);
-		}
-
 		// Draw guns
 		context.lineWidth = Math.max(2, ratio * 4);
 		context.fillStyle = mixColors(color.grey, instance.blend.color, instance.blend.amount);
 		context.strokeStyle = color.black;
-		instance.guns.forEach(function (g) {
-			context.textAlign = 'left';
-			var gx = g.offset * Math.cos(g.direction + g.angle + instance.facing + rot) + (g.length - g.position) / 2 * Math.cos(g.angle + instance.facing + rot),
-			    gy = g.offset * Math.sin(g.direction + g.angle + instance.facing + rot) + (g.length - g.position) / 2 * Math.sin(g.angle + instance.facing + rot);
-			drawTrapezoid(context, xx + drawSize * gx, yy + drawSize * gy, drawSize * g.length / 2, drawSize * g.width / 2, g.aspect, g.angle + instance.facing + rot);
-		});
+		if (instance.guns.length === m.guns.length) {
+			for (var i = 0; i < m.guns.length; i++) {
+				var g = m.guns[i],
+				    position = instance.guns[i],
+				    gx = g.offset * Math.cos(g.direction + g.angle + rot) + (g.length - position) / 2 * Math.cos(g.angle + rot),
+				    gy = g.offset * Math.sin(g.direction + g.angle + rot) + (g.length - position) / 2 * Math.sin(g.angle + rot);
+				drawTrapezoid(context, xx + drawSize * gx, yy + drawSize * gy, drawSize * g.length / 2, drawSize * g.width / 2, g.aspect, g.angle + rot);
+			}
+		} else {
+			throw "Mismatch gun number with mockup.";
+		}
 		// Draw turrets beneath us
 		instance.turrets.forEach(function (t) {
 			if (t.layer === 0) {
-				if (rot) {
-					var ang = Math.atan2(t.y, t.x) + rot,
+				if (turretsObeyRot * rot) {
+					var ang = Math.atan2(t.y, t.x) + turretsObeyRot * rot,
 					    len = Math.sqrt(t.y * t.y + t.x * t.x) * drawSize / instance.size;
-					drawEntity(xx + len * Math.cos(ang), yy + len * Math.sin(ang), t, ratio, scale, rot, context);
+					drawEntity(xx + len * Math.cos(ang), yy + len * Math.sin(ang), t, ratio, scale, turretsObeyRot * rot + t.facing, turretsObeyRot, context);
 				} else {
-					drawEntity(xx + scale * ratio * t.x, yy + scale * ratio * t.y, t, ratio, scale, rot, context);
+					drawEntity(xx + scale * ratio * t.x, yy + scale * ratio * t.y, t, ratio, scale, turretsObeyRot * rot + t.facing, turretsObeyRot, context);
 				}
 			}
 		});
-
 		// Draw body
-		var sides = instance.shape ? instance.shape : 30; // Default sides for a circle shal be 30.
+		var sides = instance.shape ? instance.shape : 25; // Default sides for a circle shall be 30.
 		context.fillStyle = mixColors(getColor(instance.color), instance.blend.color, instance.blend.amount);
 		context.strokeStyle = getColorDark(instance.color);
-		drawCircle(context, xx, yy, drawSize / instance.size * instance.realSize, sides, instance.facing + rot);
-
+		drawCircle(context, xx, yy, drawSize / instance.size * instance.realSize, sides, rot);
 		// Draw turrets above us
 		instance.turrets.forEach(function (t) {
 			if (t.layer === 1) {
-				if (rot) {
-					var ang = Math.atan2(t.y, t.x) + rot,
+				if (turretsObeyRot * rot) {
+					var ang = Math.atan2(t.y, t.x) + turretsObeyRot * rot,
 					    len = Math.sqrt(t.y * t.y + t.x * t.x) * scale * ratio;
-					drawEntity(xx + len * Math.cos(ang), yy + len * Math.sin(ang), t, ratio, scale, rot, context);
+					drawEntity(xx + len * Math.cos(ang), yy + len * Math.sin(ang), t, ratio, scale, turretsObeyRot * rot + t.facing, turretsObeyRot, context);
 				} else {
-					drawEntity(xx + scale * ratio * t.x, yy + scale * ratio * t.y, t, ratio, scale, rot, context);
+					drawEntity(xx + scale * ratio * t.x, yy + scale * ratio * t.y, t, ratio, scale, turretsObeyRot * rot + t.facing, turretsObeyRot, context);
 				}
 			}
 		});
@@ -587,7 +735,7 @@ var app =
 		var alpha = instance.fade * instance.fade;
 		ctx.globalAlpha = alpha;
 		var size = instance.size * ratio;
-		var realSize = instance.realSize;
+		var realSize = instance.realSize * ratio;
 
 		if (instance.health < 0.99 || instance.shield < 0.99) {
 			var yy = y + 1.1 * realSize + 15;
@@ -599,11 +747,11 @@ var app =
 		ctx.globalAlpha = 1;
 
 		// Draw label
-		if (instance.type == 'tank') {
+		if (instance.nameplate) {
 			ctx.lineWidth = 3;
 			ctx.textAlign = 'center';
-			drawText(instance.name, x, y - instance.realSize - 24, 16, color.guiwhite);
-			drawText(handleLargeNumber(instance.score, true), x, y - instance.realSize - 10, 8, color.guiwhite);
+			drawText(instance.name, x, y - realSize - 24, 16, color.guiwhite);
+			drawText(handleLargeNumber(instance.score, true), x, y - realSize - 10, 8, color.guiwhite);
 		}
 	}
 
@@ -621,20 +769,52 @@ var app =
 		// Draws the game environment and the gui above that
 		ctx.lineCap = 'round';
 		ctx.lineJoin = 'round';
+		renderGap = global.time - metrics.lastrender;
+		renderTimes++;
 		try {
 
-			var pt = Math.pow(gui.fps, 2) * (global.time - player.time - lag) * 30 / 1000,
-			    px = player.x + pt * player.vx,
-			    py = player.y + pt * player.vy;
+			var r = 1,
+
+			//(renderGap / metrics.updatetime > 0.5) ? 1 : renderGap / metrics.updatetime,
+			pt = 0,
+
+			//(global.time - player.time) / metrics.rendergap, //gui.fps * metrics.lag * 30 / 1000 * r,
+			pdt = 0,
+
+			//Math.min(1, metrics.lag * 30 / 1000 / metrics.updatetime) * r,
+			px = void 0,
+			    py = void 0,
+			    ppx = void 0,
+			    ppy = void 0,
+			    factor = 1;
+
+			{
+				// Move the camera
+				var dv = Math.sqrt((Math.pow(player.vx, 2) + Math.pow(player.vy, 2)) / (Math.pow(player.lastvx, 2) + Math.pow(player.lastvy, 2))),
+				    desiredx = player.lastx + pt * gui.fps * (player.x - player.lastx),
+
+				//(player.vx + pdt * (player.vx - player.lastvx)),
+				desiredy = player.lasty + pt * gui.fps * (player.y - player.lasty),
+
+				//(player.vy + pdt * (player.vy - player.lastvy)),
+				xdiff = desiredx - player.renderx,
+				    ydiff = desiredy - player.rendery;
+				ppx = xdiff * factor * r;
+				ppy = ydiff * factor * r;
+				player.renderx += ppx;
+				player.rendery += ppy;
+				px = ratio * player.renderx;
+				py = ratio * player.rendery;
+			}
 
 			{
 				// Clear the background + draw grid
 				clearScreen(color.white, 1);
 				clearScreen(color.guiblack, 0.1);
-				var left = Math.max(0, ratio * -px + global.screenWidth / 2),
-				    top = Math.max(0, ratio * -py + global.screenHeight / 2),
-				    right = Math.min(global.screenWidth, ratio * (global.gameWidth - px) + global.screenWidth / 2),
-				    bottom = Math.min(global.screenHeight, ratio * (global.gameHeight - py) + global.screenHeight / 2);
+				var left = Math.max(0, -px + global.screenWidth / 2),
+				    top = Math.max(0, -py + global.screenHeight / 2),
+				    right = Math.min(global.screenWidth, ratio * global.gameWidth - px + global.screenWidth / 2),
+				    bottom = Math.min(global.screenHeight, ratio * global.gameHeight - py + global.screenHeight / 2);
 				ctx.fillStyle = color.white;
 				ctx.fillRect(left, top, right - left, bottom - top);
 				ctx.lineWidth = 1;
@@ -642,11 +822,11 @@ var app =
 				ctx.globalAlpha = 0.1;
 				ctx.beginPath();
 				var gridsize = 16 * ratio;
-				for (var x = (global.screenWidth / 2 - px * ratio) % gridsize; x < global.screenWidth; x += gridsize) {
+				for (var x = (global.screenWidth / 2 - px) % gridsize; x < global.screenWidth; x += gridsize) {
 					ctx.moveTo(x, 0);
 					ctx.lineTo(x, global.screenHeight);
 				}
-				for (var y = (global.screenHeight / 2 - py * ratio) % gridsize; y < global.screenHeight; y += gridsize) {
+				for (var y = (global.screenHeight / 2 - py) % gridsize; y < global.screenHeight; y += gridsize) {
 					ctx.moveTo(0, y);
 					ctx.lineTo(global.screenWidth, y);
 				}
@@ -657,19 +837,30 @@ var app =
 			{
 				// Draw things
 				entities.forEach(function (instance) {
-					var tt = Math.pow(gui.fps, 2) * (global.time - instance.time - lag) * 30 / 1000,
-					    x = ratio * (instance.x + tt * instance.vx - px) + global.screenWidth / 2,
-					    y = ratio * (instance.y + tt * instance.vy - py) + global.screenHeight / 2;
-					drawEntity(x, y, instance, ratio);
-				});
-			}
+					var dv = Math.sqrt((Math.pow(instance.vx, 2) + Math.pow(instance.vy, 2)) / (Math.pow(instance.render.lastvx, 2) + Math.pow(instance.render.lastvy, 2))),
+					    desiredx = instance.render.lastx + pt * dv * (instance.x - instance.render.lastx),
 
-			{
-				// Draw healthbars
+					//(instance.vx + pdt * (instance.vx - instance.render.lastvx)),
+					desiredy = instance.render.lasty + pt * dv * (instance.y - instance.render.lasty),
+
+					//(instance.vy + pdt * (instance.vy - instance.render.lastvy)),
+					desiredf = instance.facing + pt * instance.vfacing,
+					    xdiff = desiredx - instance.render.x,
+					    ydiff = desiredy - instance.render.y;
+					instance.render.x += xdiff * factor;
+					instance.render.y += ydiff * factor;
+					instance.render.f = instance.twiggle ? Math.atan2(target.y, target.x) : instance.render.f = desiredf;
+					var x = instance.twiggle ? 0 : ratio * instance.render.x - px,
+					    y = instance.twiggle ? 0 : ratio * instance.render.y - py;
+					x += global.screenWidth / 2;
+					y += global.screenHeight / 2;
+					drawEntity(x, y, instance, ratio, 1, instance.render.f, false);
+				});
 				entities.forEach(function (instance) {
-					var tt = Math.pow(gui.fps, 2) * (global.time - instance.time - lag) * 30 / 1000,
-					    x = ratio * (instance.x + tt * instance.vx - px) + global.screenWidth / 2,
-					    y = ratio * (instance.y + tt * instance.vy - py) + global.screenHeight / 2;
+					var x = instance.twiggle ? 0 : ratio * instance.render.x - px,
+					    y = instance.twiggle ? 0 : ratio * instance.render.y - py;
+					x += global.screenWidth / 2;
+					y += global.screenHeight / 2;
 					drawHealth(x, y, instance, ratio);
 				});
 			}
@@ -684,7 +875,7 @@ var app =
 				var vspacing = 4;
 				var len = 0;
 				var height = 18;
-				var _x10 = global.screenWidth / 2;
+				var _x12 = global.screenWidth / 2;
 				var _y = spacing;
 				for (var i = messages.length - 1; i >= 0; i--) {
 					var msg = messages[i];
@@ -693,11 +884,11 @@ var app =
 					len = measureText(text, height - 4);
 
 					ctx.globalAlpha = 0.5 * msg.alpha;
-					drawBar(_x10 - len / 2, _x10 + len / 2, _y + height / 2, height, color.black);
+					drawBar(_x12 - len / 2, _x12 + len / 2, _y + height / 2, height, color.black);
 
 					ctx.globalAlpha = Math.min(1, msg.alpha);
 					ctx.textAlign = 'center';
-					drawText(text, _x10, _y + height - 4, height - 4, color.guiwhite);
+					drawText(text, _x12, _y + height - 4, height - 4, color.guiwhite);
 
 					_y += vspacing + height;
 					if (msg.status > 1) {
@@ -707,7 +898,7 @@ var app =
 					if (msg.status > 1) {
 						messages[i].status -= 0.05;
 						messages[i].alpha += 0.05;
-					} else if (i === 0 && (messages.length > 5 || Date.now() - msg.time > 5000)) {
+					} else if (i === 0 && (messages.length > 5 || Date.now() - msg.time > 10000)) {
 						messages[i].status -= 0.05;
 						messages[i].alpha -= 0.05;
 						if (messages[i].alpha <= 0) {
@@ -726,7 +917,7 @@ var app =
 				var _len = alcoveSize * global.screenWidth; // The 30 is for the value modifiers
 				var save = _len;
 				var _height = 15;
-				var _x11 = spacing;
+				var _x13 = spacing;
 				var _y2 = global.screenHeight - spacing - _height;
 				var ticker = 11;
 				gui.skills.typeData.forEach(function (skill) {
@@ -741,30 +932,30 @@ var app =
 							_len = _len * skill.cap / skill.maxLevel;
 							_max = skill.cap;
 						}
-						drawBar(_x11 + _height / 2, _x11 - _height / 2 + _len, _y2 + _height / 2, _height, color.black);
-						drawBar(_x11 + _height / 2, _x11 + _height / 2 + (_len - _height) * (skill.cap / _max), _y2 + _height / 2, _height - 3, color.grey);
-						drawBar(_x11 + _height / 2, _x11 + _height / 2 + (_len - _height) * (skill.level / _max), _y2 + _height / 2, _height - 3.5, getColor(skill.color));
+						drawBar(_x13 + _height / 2, _x13 - _height / 2 + _len, _y2 + _height / 2, _height, color.black);
+						drawBar(_x13 + _height / 2, _x13 + _height / 2 + (_len - _height) * (skill.cap / _max), _y2 + _height / 2, _height - 3, color.grey);
+						drawBar(_x13 + _height / 2, _x13 + _height / 2 + (_len - _height) * (skill.level / _max), _y2 + _height / 2, _height - 3.5, getColor(skill.color));
 						if (blocking) {
 							// Blocked-off area
 							ctx.lineWidth = 1;
 							ctx.strokeStyle = color.grey;
 							for (var j = skill.cap + 1; j < _max; j++) {
-								drawGuiLine(_x11 + (_len - _height) * j / _max, _y2 + 1.5, _x11 + (_len - _height) * j / _max, _y2 - 3 + _height);
+								drawGuiLine(_x13 + (_len - _height) * j / _max, _y2 + 1.5, _x13 + (_len - _height) * j / _max, _y2 - 3 + _height);
 							}
 						}
 						ctx.strokeStyle = color.black; // Vertical dividers
 						ctx.lineWidth = 1;
 						for (var _j = 1; _j < skill.level + 1; _j++) {
-							drawGuiLine(_x11 + (_len - _height) * _j / _max, _y2 + 1.5, _x11 + (_len - _height) * _j / _max, _y2 - 3 + _height);
+							drawGuiLine(_x13 + (_len - _height) * _j / _max, _y2 + 1.5, _x13 + (_len - _height) * _j / _max, _y2 - 3 + _height);
 						}
 						ctx.textAlign = 'center'; // Skill name
 						ctx.lineWidth = 2;
 						var textcolor = skill.level == _max ? getColor(skill.color) : !gui.skills.points || skill.cap !== skill.maxLevel && skill.level == skill.cap ? color.grey : color.guiwhite;
-						drawText(skill.name, Math.round(_x11 + _len / 2) + 0.5, Math.round(_y2 + _height - 5) + 0.5, _height - 5, textcolor);
+						drawText(skill.name, Math.round(_x13 + _len / 2) + 0.5, Math.round(_y2 + _height - 5) + 0.5, _height - 5, textcolor);
 						ctx.textAlign = 'right'; // Skill key
-						drawText('[' + ticker % 10 + ']', Math.round(_x11 + _len - _height * 0.25) + 0.5, Math.round(_y2 + _height - 6) + 0.5, _height - 5, textcolor);
+						drawText('[' + ticker % 10 + ']', Math.round(_x13 + _len - _height * 0.25) + 0.5, Math.round(_y2 + _height - 6) + 0.5, _height - 5, textcolor);
 						ctx.textAlign = 'left'; // Skill value
-						drawText(skill.value, Math.round(_x11 + _len + 4) + 0.5, Math.round(_y2 + _height - 5) + 0.5, _height - 3, getColor(skill.color));
+						drawText(skill.value, Math.round(_x13 + _len + 4) + 0.5, Math.round(_y2 + _height - 5) + 0.5, _height - 3, getColor(skill.color));
 
 						_y2 -= _height + _vspacing;
 					}
@@ -773,7 +964,7 @@ var app =
 					// Draw skillpoints to spend
 					ctx.lineWidth = 4;
 					ctx.textAlign = 'bottom';ctx.textAlign = 'right';
-					drawText('x' + gui.skills.points, Math.round(_x11 + _len - 2) + 0.5, Math.round(_y2 + _height - 4) + 0.5, 20, color.guiwhite);
+					drawText('x' + gui.skills.points, Math.round(_x13 + _len - 2) + 0.5, Math.round(_y2 + _height - 4) + 0.5, 20, color.guiwhite);
 				}
 			}
 
@@ -782,56 +973,57 @@ var app =
 				var _vspacing2 = 4;
 				var _len2 = 2 * alcoveSize * global.screenWidth;
 				var _height2 = 25;
-				var _x12 = (global.screenWidth - _len2) / 2;
+				var _x14 = (global.screenWidth - _len2) / 2;
 				var _y3 = global.screenHeight - spacing - _height2;
 
 				ctx.lineWidth = 1;
-				drawBar(_x12, _x12 + _len2, _y3 + _height2 / 2, _height2, color.black);
-				drawBar(_x12, _x12 + _len2, _y3 + _height2 / 2, _height2 - 3, color.grey);
-				drawBar(_x12, _x12 + _len2 * gui.progress, _y3 + _height2 / 2, _height2 - 3.5, color.gold);
+				drawBar(_x14, _x14 + _len2, _y3 + _height2 / 2, _height2, color.black);
+				drawBar(_x14, _x14 + _len2, _y3 + _height2 / 2, _height2 - 3, color.grey);
+				drawBar(_x14, _x14 + _len2 * gui.progress, _y3 + _height2 / 2, _height2 - 3.5, color.gold);
 				ctx.lineWidth = 2;
 				ctx.textAlign = 'center';
-				drawText('Level ' + gui.level + ' ' + gui.type, Math.round(_x12 + _len2 / 2) + 0.5, Math.round(_y3 + _height2 - 5) + 0.5, _height2 - 3, color.guiwhite);
+				drawText('Level ' + gui.level + ' ' + gui.type, Math.round(_x14 + _len2 / 2) + 0.5, Math.round(_y3 + _height2 - 5) + 0.5, _height2 - 3, color.guiwhite);
 				_height2 = 14;
 				_y3 -= _height2 + _vspacing2;
-				drawBar(_x12, _x12 + _len2, _y3 + _height2 / 2, _height2, color.black);
-				drawBar(_x12, _x12 + _len2, _y3 + _height2 / 2, _height2 - 3, color.grey);
+				drawBar(_x14, _x14 + _len2, _y3 + _height2 / 2, _height2, color.black);
+				drawBar(_x14, _x14 + _len2, _y3 + _height2 / 2, _height2 - 3, color.grey);
 				var scoreFactor = max ? Math.min(1, gui.score / max) : 1;
-				drawBar(_x12, _x12 + _len2 * scoreFactor, _y3 + _height2 / 2, _height2 - 3.5, color.green);
+				drawBar(_x14, _x14 + _len2 * scoreFactor, _y3 + _height2 / 2, _height2 - 3.5, color.green);
 				ctx.lineWidth = 2;
 				ctx.textAlign = 'center';
-				drawText('Score: ' + handleLargeNumber(gui.score), Math.round(_x12 + _len2 / 2) + 0.5, Math.round(_y3 + _height2 - 4) + 0.5, _height2 - 2, color.guiwhite);
+				drawText('Score: ' + handleLargeNumber(gui.score), Math.round(_x14 + _len2 / 2) + 0.5, Math.round(_y3 + _height2 - 4) + 0.5, _height2 - 2, color.guiwhite);
 				ctx.lineWidth = 4;
-				drawText(player.name, Math.round(_x12 + _len2 / 2) + 0.5, Math.round(_y3 - 6 - _vspacing2) + 0.5, 32, color.guiwhite);
+				drawText(player.name, Math.round(_x14 + _len2 / 2) + 0.5, Math.round(_y3 - 6 - _vspacing2) + 0.5, 32, color.guiwhite);
 			}
 
 			{
 				// Draw minimap and FPS monitors
 				var _len3 = alcoveSize * global.screenWidth;
 				var _height3 = _len3;
-				var _x13 = global.screenWidth - _len3 - spacing;
+				var _x15 = global.screenWidth - _len3 - spacing;
 				var _y4 = global.screenHeight - _height3 - spacing;
 
 				ctx.globalAlpha = 0.5;
 				ctx.fillStyle = color.grey;
-				drawGuiRect(_x13, _y4, _len3, _height3);
+				drawGuiRect(_x15, _y4, _len3, _height3);
 				ctx.fillStyle = color.black;
 				minimap.forEach(function (o) {
-					drawGuiRect(_x13 + o[0] / global.gameWidth * _len3, _y4 + o[1] / global.gameHeight * _height3, 1, 1);
+					drawGuiRect(_x15 + o[0] / global.gameWidth * _len3, _y4 + o[1] / global.gameHeight * _height3, 1, 1);
 				});
 				ctx.globalAlpha = 1;
 
 				ctx.lineWidth = 1;
 				ctx.strokeStyle = color.black;
 				drawGuiRect( // My position
-				_x13 + player.x / global.gameWidth * _len3 - 1, _y4 + player.y / global.gameWidth * _height3 - 1, 3, 3, true);
+				_x15 + player.x / global.gameWidth * _len3 - 1, _y4 + player.y / global.gameWidth * _height3 - 1, 3, 3, true);
 				ctx.lineWidth = 3;
-				drawGuiRect(_x13, _y4, _len3, _height3, true); // Border
+				drawGuiRect(_x15, _y4, _len3, _height3, true); // Border
 
 				ctx.textAlign = 'right';
-				drawText('Latency: ' + latency + 'ms', _x13 + _len3, _y4 - 38, 10, color.guiwhite);
-				drawText('Client FPS: ' + rendertime, _x13 + _len3, _y4 - 24, 10, color.guiwhite);
-				drawText('Server Speed: ' + (100 * gui.fps).toFixed(2) + '%', _x13 + _len3, _y4 - 10, 10, color.guiwhite);
+				drawText('Update Rate: ' + metrics.updatetime + 'Hz', _x15 + _len3, _y4 - 52, 10, color.guiwhite);
+				drawText('Latency: ' + metrics.latency + 'ms', _x15 + _len3, _y4 - 38, 10, color.guiwhite);
+				drawText('Client FPS: ' + metrics.rendertime, _x15 + _len3, _y4 - 24, 10, color.guiwhite);
+				drawText('Server Speed: ' + (100 * gui.fps).toFixed(2) + '%', _x15 + _len3, _y4 - 10, 10, color.guiwhite);
 			}
 
 			{
@@ -839,29 +1031,30 @@ var app =
 				var _vspacing3 = 4;
 				var _len4 = alcoveSize * global.screenWidth;
 				var _height4 = 14;
-				var _x14 = global.screenWidth - _len4 - spacing;
+				var _x16 = global.screenWidth - _len4 - spacing;
 				var _y5 = spacing + _height4 + 7;
 				ctx.lineWidth = 4;
 				ctx.textAlign = 'center';
-				drawText('Leaderboard:', Math.round(_x14 + _len4 / 2) + 0.5, Math.round(_y5 - 6) + 0.5, _height4 + 4, color.guiwhite);
+				drawText('Leaderboard:', Math.round(_x16 + _len4 / 2) + 0.5, Math.round(_y5 - 6) + 0.5, _height4 + 4, color.guiwhite);
 				var _i2 = 0;
 				leaderboard.forEach(function (entry) {
 					leaderboardScore[_i2] += (entry.score - leaderboardScore[_i2]) / 20;
-					drawBar(_x14, _x14 + _len4, _y5 + _height4 / 2, _height4, color.black);
-					drawBar(_x14, _x14 + _len4, _y5 + _height4 / 2, _height4 - 3, color.grey);
+					drawBar(_x16, _x16 + _len4, _y5 + _height4 / 2, _height4, color.black);
+					drawBar(_x16, _x16 + _len4, _y5 + _height4 / 2, _height4 - 3, color.grey);
 					var shift = Math.min(1, entry.score / max);
-					drawBar(_x14, _x14 + _len4 * shift, _y5 + _height4 / 2, _height4 - 3.5, color.green);
+					drawBar(_x16, _x16 + _len4 * shift, _y5 + _height4 / 2, _height4 - 3.5, color.green);
 					// Leadboard name + score
 					ctx.textAlign = 'center';
 					ctx.lineWidth = 2;
 					var dash = '';
-					drawText(entry.name + ': ' + handleLargeNumber(Math.round(leaderboardScore[_i2++])), Math.round(_x14 + _len4 / 2) + 0.5, Math.round(_y5 + _height4 - 5) + 0.5, _height4 - 5, color.guiwhite);
-					//drawEntity(x - height, y + height/2, entry.picture, height / 2.7 / entry.picture.size);
+					drawText(entry.name + ': ' + handleLargeNumber(Math.round(leaderboardScore[_i2++])), Math.round(_x16 + _len4 / 2) + 0.5, Math.round(_y5 + _height4 - 5) + 0.5, _height4 - 5, color.guiwhite);
 
-					var scale = _height4 / entry.picture.position.axis;
-					var xx = _x14 - 1.5 * _height4 - scale * entry.picture.position.middle.x * 0.707;
-					var yy = _y5 + 0.5 * _height4 + scale * entry.picture.position.middle.x * 0.707;
-					drawEntity(xx, yy, entry.picture.body, 1 / scale, scale * scale / entry.picture.body.realSize, -Math.PI / 4);
+					var picture = getEntityImageFromMockup(entry.index, entry.color),
+					    position = mockups[entry.index].position,
+					    scale = _height4 / position.axis,
+					    xx = _x16 - 1.5 * _height4 - scale * position.middle.x * 0.707,
+					    yy = _y5 + 0.5 * _height4 + scale * position.middle.x * 0.707;
+					drawEntity(xx, yy, picture, 1 / scale, scale * scale / picture.realSize, -Math.PI / 4);
 
 					_y5 += _vspacing3 + _height4;
 				});
@@ -894,7 +1087,7 @@ var app =
 					var internalSpacing = 8;
 					var _len5 = alcoveSize * global.screenWidth / 2 * 1;
 					var _height5 = _len5;
-					var _x15 = spacing;
+					var _x17 = spacing;
 					var _y6 = spacing;
 					var _ticker = 0;
 					upgradeSpin += 0.01;
@@ -903,45 +1096,36 @@ var app =
 					gui.upgrades.forEach(function (model) {
 						ctx.globalAlpha = 0.5;
 						ctx.fillStyle = getColor(colorIndex);
-						drawGuiRect(_x15, _y6, _len5, _height5);
+						drawGuiRect(_x17, _y6, _len5, _height5);
 						ctx.globalAlpha = 0.1;
 						ctx.fillStyle = getColor(-10 + colorIndex++);
-						drawGuiRect(_x15, _y6, _len5, _height5 * 0.6);
+						drawGuiRect(_x17, _y6, _len5, _height5 * 0.6);
 						ctx.fillStyle = color.black;
-						drawGuiRect(_x15, _y6 + _height5 * 0.6, _len5, _height5 * 0.4);
+						drawGuiRect(_x17, _y6 + _height5 * 0.6, _len5, _height5 * 0.4);
 						ctx.globalAlpha = 1;
 
 						// Find offset location with rotation
-						var scale = 0.6 * _len5 / model.position.axis;
-						var xx = _x15 + 0.5 * _len5 - scale * model.position.middle.x * Math.cos(upgradeSpin);
-						var yy = _y6 + 0.5 * _height5 - scale * model.position.middle.x * Math.sin(upgradeSpin);
-						drawEntity(xx, yy, model.body, 1, scale / model.body.size, upgradeSpin);
-
-						/*drawCircle(
-          x + len / 2 + scale * model.position.middle.x,
-          y + height / 2 +  scale * model.position.middle.y,
-          scale * model.position.axis/2, 30, 0, false
-      );*/
-						/*ctx.strokeStyle = color.red;
-      // Debug stuff
-      model.position.points.forEach(function(point) {
-          drawCircle(x + len / 2 + model.body.size * point.x, y + height / 2 + model.body.size * point.y, 3, 3);
-      });*/
+						var picture = getEntityImageFromMockup(model[0], model[1]),
+						    position = mockups[model[0]].position,
+						    scale = 0.6 * _len5 / position.axis,
+						    xx = _x17 + 0.5 * _len5 - scale * position.middle.x * Math.cos(upgradeSpin),
+						    yy = _y6 + 0.5 * _height5 - scale * position.middle.x * Math.sin(upgradeSpin);
+						drawEntity(xx, yy, picture, 1, scale / picture.realSize, upgradeSpin);
 
 						ctx.textAlign = 'center'; // Tank name
 						ctx.lineWidth = 2;
-						drawText(model.body.label, Math.round(_x15 + _len5 / 2) + 0.5, Math.round(_y6 + _height5 - 6) + 0.5, _height5 / 8 - 3, color.guiwhite);
+						drawText(picture.name, Math.round(_x17 + _len5 / 2) + 0.5, Math.round(_y6 + _height5 - 6) + 0.5, _height5 / 8 - 3, color.guiwhite);
 						ctx.textAlign = 'right'; // Upgrade key
-						drawText('[' + getClassUpgradeKey(_ticker) + ']', Math.round(_x15 + _len5 - 4) + 0.5, Math.round(_y6 + _height5 - 6) + 0.5, _height5 / 8 - 3, color.guiwhite);
+						drawText('[' + getClassUpgradeKey(_ticker) + ']', Math.round(_x17 + _len5 - 4) + 0.5, Math.round(_y6 + _height5 - 6) + 0.5, _height5 / 8 - 3, color.guiwhite);
 
 						ctx.strokeStyle = color.black; // Already incremented, see above
 						ctx.globalAlpha = 1;
 						ctx.lineWidth = 3;
-						drawGuiRect(_x15, _y6, _len5, _height5, true); // Border
+						drawGuiRect(_x17, _y6, _len5, _height5, true); // Border
 
 						if (_ticker++ % 2) {
 							_y6 -= _height5 + internalSpacing;
-							_x15 += _len5 + internalSpacing;
+							_x17 += _len5 + internalSpacing;
 						} else {
 							_y6 += _height5 + internalSpacing;
 						}
@@ -950,6 +1134,8 @@ var app =
 					global.canUpgrade = false;
 				}
 			}
+
+			metrics.lastrender = global.time;
 		} catch (error) {
 			console.log(error);
 		}
@@ -959,17 +1145,15 @@ var app =
 		clearScreen(color.black, 0.5);
 		ctx.textAlign = 'center';
 		ctx.lineWidth = 4;
-		var x = 5;
 		drawText('lol you died', global.screenWidth / 2, global.screenHeight / 2 - 40, 16, color.guiwhite);
 		drawText('Final score: ' + gui.score, global.screenWidth / 2, global.screenHeight / 2, 48, color.guiwhite);
-		drawText(`The game will restart in ${x} seconds...`, global.screenWidth / 2, global.screenHeight / 2 + 40, 16, color.guiwhite);
-		var countdown = setInterval(() => {
-			x--;
-			if (x < 0){
-				clearInterval(countdown);
-				startGame('player');
-			}
-		}, 1000);
+		drawText('Press Enter to play again.', global.screenWidth / 2, global.screenHeight / 2 + 40, 16, color.guiwhite);
+		function restartOnEnter(){
+			window.removeEventListener("keydown", restartOnEnter);
+			global.died = false;
+			startGame("player");
+		}
+		window.addEventListener("keydown", restartOnEnter);
 	}
 
 	function gameDrawBeforeStart() {
@@ -990,20 +1174,26 @@ var app =
 
 	function animloop() {
 		global.animLoopHandle = window.requestAnimFrame(animloop);
-		var ratio = Math.max(global.screenWidth / player.view, global.screenHeight / player.view / 9 * 16);
+		player.renderv += (player.view - player.renderv) / 30;
+		var ratio = Math.max(global.screenWidth / player.renderv, global.screenHeight / player.renderv / 9 * 16);
 
 		// Draw the game
 		if (!global.disconnected) {
 			if (global.gameStart) {
 				global.time = Date.now();
-				renderTimes++;
 				if (global.time - lastPing > 1000) {
 					// Latency
+					// Do ping.
 					socket.emit('pingcheck', global.time);
 					lastPing = global.time;
-					rendertime = renderTimes;
+					// Do rendering speed.
+					metrics.rendertime = renderTimes;
 					renderTimes = 0;
+					// Do update rate.
+					metrics.updatetime = updateTimes;
+					updateTimes = 0;
 				}
+				metrics.lag = global.time - player.time;
 				gameDraw(ratio);
 			} else {
 				gameDrawBeforeStart();
