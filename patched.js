@@ -114,7 +114,7 @@ var app =
 	function validNick() {
 		var regex = /^\w*$/;
 		debug('Regex Test', regex.exec(playerNameInput.value));
-		return regex.exec(playerNameInput.value) !== null;
+		return true;
 	}
 
 	window.onload = function () {
